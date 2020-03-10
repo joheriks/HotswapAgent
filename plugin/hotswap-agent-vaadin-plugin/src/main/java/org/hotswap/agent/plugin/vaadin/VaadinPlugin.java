@@ -3,6 +3,8 @@ package org.hotswap.agent.plugin.vaadin;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -55,6 +57,8 @@ public class VaadinPlugin {
     private Object routeConfiguration;
     private Method setRouteMethod;
 
+    private Set<Object> createdUiInternals = new HashSet<>();
+
     public VaadinPlugin() {
     }
 
@@ -79,7 +83,24 @@ public class VaadinPlugin {
                 "registerRouteConfiguration", "this", "java.lang.Object");
         ctClass.getDeclaredConstructors()[0].insertAfter(src);
     }
-    
+
+    @OnClassLoadEvent(classNameRegexp = "com.vaadin.flow.component.internal.UIInternals")
+    public static void initUiInternals(CtClass ctClass)
+            throws NotFoundException, CannotCompileException {
+        String src = PluginManagerInvoker
+                .buildInitializePlugin(VaadinPlugin.class);
+        src += PluginManagerInvoker.buildCallPluginMethod(VaadinPlugin.class,
+                "registerUiInternals", "this", "java.lang.Object");
+        ctClass.getDeclaredConstructors()[1].insertAfter(src);
+    }
+
+    public void registerUiInternals(Object uiInternals) {
+        // TODO: find a way to loop through all active UIs using reflection instead
+        // of storing them in this list
+        LOGGER.warning("Registered UI");
+        createdUiInternals.add(uiInternals);
+    }
+
     public void registerRouteConfiguration(Object routeConfiguration) {
         try {
             if(routeConfiguration != null) {
@@ -167,6 +188,20 @@ public class VaadinPlugin {
             } else {
                 ensureInRouter(ctClass);
             }
+        }
+    }
+
+    @OnClassFileEvent(classNameRegexp = ".*", events = {FileEvent.CREATE,
+            FileEvent.MODIFY, FileEvent.DELETE})
+    public void refresh(CtClass ctClass) throws Exception {
+        // TODO: this should not be done on every class change, since several classes
+        // may have changed simultaneously but we only want one refresh. Add some grace
+        // time.
+        LOGGER.debug("Class " + ctClass.getName() + ", triggering reload");
+        for (Object uiInternalsInstance : createdUiInternals) {
+            Class<?> uiInternals = resolveClass("com.vaadin.flow.component.internal.UIInternals");
+            Method refreshMethod = uiInternals.getMethod("refreshBrowser");
+            refreshMethod.invoke(uiInternalsInstance);
         }
     }
 
